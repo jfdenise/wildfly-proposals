@@ -255,6 +255,15 @@ Calling  java <JVM and system properties> -jar <bootable JAR name>.jar --help du
 
 The bootable JAR depends on JBoss log manager. Logging is configured thanks to the logging subsystem.
 
+==== SecurityManager
+
+The bootable JAR can activate the WildFlySecurityManager for the running application server if the `-secmgr` command line argument is 
+added when starting the server.
+
+Permissions to be assigned to deployments should either be added to the `security-manager` subsystem or to a `META-INF/permissions.xml` 
+within the deployment with the latter being preferred.  For either of these approaches to be available the server must be provisioned with the 
+`security-manager` layer present.
+
 ==== Shutting down the Bootable JAR
 
 The bootable JAR process can be shutdown in the following ways:
@@ -284,6 +293,9 @@ Arguments specific to bootable JAR:
 
 |--install-dir=<path to directory to install server in>
 |By default a new TEMP directory is created. TEMP directory location is controlled by the Java VM (call to ```Files.createTempDirectory```).
+
+|-secmgr
+|Activate and install the `WildFlySecurityManager`.
 |===
 
 Server arguments:
