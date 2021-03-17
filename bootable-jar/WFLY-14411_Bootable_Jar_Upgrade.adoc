@@ -26,6 +26,8 @@ from the Bootable JAR maven plugin.
 
 * https://issues.redhat.com/browse/WFGP-194
 
+* https://issues.redhat.com/browse/WFGP-197
+
 === Dev Contacts
 
 * mailto:{email}[{author}]
@@ -69,10 +71,20 @@ That is the nominal Maven way of expressing dependencies.
 * We are not automatically using all artifacts present in the project dependencies section for the upgrade.  
 A user needs to list the GroupId/ArtifactId/[Classifier] of the artifacts he wants to see used during the upgrade.
 
-* The `wildfly-jar-maven-plugin` configuration is evolved with an `<overriden-artifacts>` set that contains the artifacts that 
-are in use for the upgrade.
+* The `wildfly-jar-maven-plugin` configuration is evolved with an `<overridden-server-artifacts>` set that contains the artifacts that 
+are in use for the upgrade. These artifacts are upgraded globally. Any feature-pack that references it will be upgraded.
 
-* JBoss Modules jar artifacts and Galleon feature-packs zip artifacts are treated the same way and can be present in the `overriden-artifacts` set.
+* The `wildfly-jar-maven-plugin` `<FeaturePack>` configuration element is evolved with an `<overridden-artifacts>` set that contains the artifacts (JBoss Modules module 
+artifacts only) that are in use for the upgrade. These artifacts are upgraded only in the feature-pack that define them. For example we could have FP1 and FP2 that depend on
+the same GA but with different versions. In such a case we want to control which actual artifact is impacted by the upgrade. A more concrete example
+are the MS SQL driver that are platform specific. The version capture the JRE to be used: com.microsoft.sqlserver:mssql-jdbc:7.2.2.jre11 vs com.microsoft.sqlserver:mssql-jdbc:7.2.2.jre8.
+The 2 artifacts can't be added to same Galleon feature-pack.  A feature pack A would contain JRE11 driver and module, feature pack B would contain JR8 driver and module. 
+When provisioning both FP (to build a bootable JAR capable to run on both JDK), a global update would wrongly impact the 2 modules. Narrowing the upgrade in each FP would allow to upgrade the artifact with the proper version.
+
+* The overridden artifacts inside  the `<FeaturePack>` configuration element can define a version. This allows to have 
+multiple artifacts with the same GA to be upgraded to different versions according to the feature-pack that contain them.
+
+* JBoss Modules jar artifacts and Galleon feature-packs zip artifacts are treated the same way and can be present in the `overridden-server-artifacts` set.
 
 === Hard Requirements
 
@@ -85,17 +97,28 @@ are in use for the upgrade.
 * This mechanism strongly depends on Maven dependency resolution. 
 Any artifact to upgrade must be present in accessible Maven repositories (remote or local cache).
 
-* An artifact present in the  `overridden-artifacts` set must be present in the dependencies section. 
+* An artifact present in the  `overridden-server-artifacts` or `overridden-artifacts` set must be present in the dependencies section. 
 It is advised that the dependency scope be `provided` to be not included in the application artifact (eg: war).  A warning is displayed if
 the scope is not `provided`.
 If an artifact is not present in the dependencies, then a failure occurs during build.
 
-* An artifact is referenced in the `overridden-artifacts` by GroupId, ArtifactId and optionally Classifier. 
+* An artifact can be upgraded globally and in the scope of one or more feature-packs.
+ The version upgrade in the context of the feature-packs take precedence over the global upgrade. 
+
+* An artifact is referenced in the `overridden-server-artifacts` by GroupId, ArtifactId and optionally Classifier. 
 Version being retrieved from the Maven dependencies. 
 
-* An overridden artifact (artifact present in the `overridden-artifacts` list) must be unique. Any duplicate will make the packaging to fail.
+* An artifact is referenced in the `overridden-artifacts` by GroupId, ArtifactId, optionally Classifier and optionally Version. 
+Version is being retrieved from the Maven dependencies if not set. 
 
-* Adding an overridden artifact that is not part of the provisioned server artifacts will lead to a failure during build.
+* An overridden artifact (artifact present in the `overridden-server-artifacts` list) must be unique. Any duplicate will make the packaging to fail.
+
+* An overridden artifact (artifact present in the `<FeaturePack>` `overridden-artifacts` list) must be unique in the `<FeaturePack>` `overridden-artifacts` list. 
+Any duplicate will make the packaging to fail.
+
+* Adding an overridden artifact that is not part of the provisioned server artifacts will lead to a failure during build. If the overridden artifact is associated
+to a feature-pack, the check is done in the context of the feature-pack. If an overridden artifact configuration includes an optional Classifier setting, 
+the provisioned server artifact must have the same Classifier
 
 * Adding an overridden Galleon feature-pack artifact that is not a dependency of the WildFly server being 
 provisioned will lead to an error during packaging. 
@@ -117,13 +140,15 @@ It contains XML elements for the Galleon feature-packs dependencies, JBoss Modul
 JBoss Modules modules artifacts are grouped by JBoss Modules name.
 The generated file contains only the artifacts that are provisioned by Galleon. 
 Each artifact version is the one that would get installed when building the Bootable JAR without upgrade.
+If artifact transformation is done when building the bootable jar (a la what is done to produce EE 9 compatible artifacts for WildFly Preview), 
+the generated file contains the identifier of the untransformed artifact, not the transformed artifact which may have a different Version.
 
 * An artifact upgraded to the same version as the one referenced in the Galleon feature-pack is not upgraded. In this case a warning is displayed during build.
 
 * It is possible to downgrade an artifact to an older version. In this case a warning is displayed during build. 
 Warning can be disabled with `<disable-warn-for-artifact-downgrade>true</disable-warn-for-artifact-downgrade>` element.
 
-Example of an hypotetical `undertow-core` and `wildfly-ee-galleon-pack` upgrade:
+Example of an hypotetical `undertow-core` and `wildfly-ee-galleon-pack` global upgrade, `myartifact` upgraded only in `my-galleon-pack`:
 
 ```
 ...
@@ -140,6 +165,12 @@ Example of an hypotetical `undertow-core` and `wildfly-ee-galleon-pack` upgrade:
             <type>zip</type>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>org.foo.bar</groupId>
+            <artifactId>myartifact</artifactId>
+            <version>1.0.0.Final</version>
+            <scope>provided</scope>
+        </dependency>
 ...
 
 <plugin>
@@ -152,12 +183,24 @@ Example of an hypotetical `undertow-core` and `wildfly-ee-galleon-pack` upgrade:
                     <artifactId>wildfly-galleon-pack</artifactId>
                     <version>23.0.0.Final</version>
                 </feature-pack>
+                <feature-pack>
+                    <groupId>org.foo</groupId>
+                    <artifactId>my-galleon-pack</artifactId>
+                    <version>2.0.0.Final</version>
+                    <!-- We list the set of artifacts we want to see replaced during provisioning in this feature-pack -->
+                    <overridden-artifacts>
+                      <artifact>
+                        <groupId>org.foo.bar</groupId>
+                        <artifactId>myartifact</artifactId>
+                      </artifact>
+                    </overridden-artifacts>
+                </feature-pack>
             </feature-packs>
             <layers>
                 <layer>jaxrs-server</layer>
             </layers>
             <!-- We list the set of artifacts we want to see replaced during provisioning -->
-            <overriden-server-artifacts>
+            <overridden-server-artifacts>
                 <artifact>
                     <groupId>io.undertow</groupId>
                     <artifactId>undertow-core</artifactId>
@@ -166,7 +209,7 @@ Example of an hypotetical `undertow-core` and `wildfly-ee-galleon-pack` upgrade:
                     <groupId>org.wildfly</groupId>
                     <artifactId>wildfly-ee-galleon-pack</artifactId>
                 </artifact>
-            </overriden-server-artifacts>
+            </overridden-server-artifacts>
         </configuration>
 ...
 ```
